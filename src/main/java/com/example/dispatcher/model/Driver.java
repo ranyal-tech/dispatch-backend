@@ -92,7 +92,6 @@ public class Driver {
 
     public void assignRide(String rideId) {
         this.assignedRideId = rideId;
-        setStatus(DriverStatus.ON_TRIP);
     }
 
     public void clearAssignedRide() {
