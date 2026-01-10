@@ -1,7 +1,10 @@
 package com.example.dispatcher.model;
 
 import com.example.dispatcher.geo.GeoHashUtil;
+
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
 
 public class Driver {
 
@@ -16,6 +19,8 @@ public class Driver {
     private long lastStateChangeAt;
     private int rejectCount;
     private int timeoutCount;
+    private String assignedRideId;
+    private final ReentrantLock lock = new ReentrantLock();
 
     public Driver() {
         this.id = "D-" + SEQ.getAndIncrement();   // ✅ ID generated once
@@ -74,4 +79,29 @@ public class Driver {
             this.lastStateChangeAt = System.currentTimeMillis();
         }
     }
+
+    public boolean tryLock(long timeoutMs) throws InterruptedException {
+        return lock.tryLock(timeoutMs, TimeUnit.MILLISECONDS);
+    }
+
+    public void unlock() {
+        if (lock.isHeldByCurrentThread()) {
+            lock.unlock();
+        }
+    }
+
+    public void assignRide(String rideId) {
+        this.assignedRideId = rideId;
+        setStatus(DriverStatus.ON_TRIP);
+    }
+
+    public void clearAssignedRide() {
+        this.assignedRideId = null;
+        setStatus(DriverStatus.ONLINE);
+    }
+
+    public String getAssignedRideId() {
+        return assignedRideId;
+    }
+
 }

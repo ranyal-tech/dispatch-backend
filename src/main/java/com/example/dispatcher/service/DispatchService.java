@@ -1,6 +1,7 @@
 package com.example.dispatcher.service;
 
 import com.example.dispatcher.geo.GeoHashUtil;
+import com.example.dispatcher.lock.LockPolicy;
 import com.example.dispatcher.model.*;
 import com.example.dispatcher.state.RideStateMachine;
 import com.example.dispatcher.store.GeoDriverStore;
@@ -84,19 +85,38 @@ public class DispatchService {
 
     private void onTimeout(Ride ride, Driver driver) {
 
-        // ignore stale timeout
+        boolean rideLocked = false;
+        boolean driverLocked = false;
+
+        try {
+            // 🔧 ADD: fail-fast locking
+            rideLocked = ride.tryLock(LockPolicy.LOCK_TIMEOUT_MS);
+            if (!rideLocked) return;
+
+            driverLocked = driver.tryLock(LockPolicy.LOCK_TIMEOUT_MS);
+            if (!driverLocked) return;
+
+            // ignore stale timeout
         if (ride.getStatus() != RideStatus.DRIVER_PINGED ||
                 !driver.getId().equals(ride.getAssignedDriverId())) {
             return;
         }
 
         driver.recordTimeout();
-
+            String key = ride.getId() + ":" + driver.getId();
+            store.rideTimerExpired.put(key, true);
         ride.setAssignedDriverId(null);
-        // 🔧 CHANGE: state back to REQUESTED (spec)
+        driver.clearAssignedRide();
+            // CHANGE: state back to REQUESTED (spec)
         RideStateMachine.validate(ride.getStatus(), RideStatus.REQUESTED);
         ride.setStatus(RideStatus.REQUESTED);
 
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } finally {
+            if (driverLocked) driver.unlock();
+            if (rideLocked) ride.unlock();
+        }
         // retry dispatch
         dispatch(ride);
     }
@@ -108,90 +128,116 @@ public class DispatchService {
     }
 
     public void dispatch(Ride ride) {
+        boolean rideLocked = false;
+        try {
+            // 🔧 ADD: tryLock
+            rideLocked = ride.tryLock(LockPolicy.LOCK_TIMEOUT_MS);
+            if (!rideLocked) return;
 
-        // 1️⃣ Dispatch allowed only in waiting states
-        if (ride.getStatus() != RideStatus.REQUESTED &&
-                ride.getStatus() != RideStatus.DRIVER_PINGED) {
-            return;
-        }
+            // 1️⃣ Dispatch allowed only in waiting states
+            if (ride.getStatus() != RideStatus.REQUESTED &&
+                    ride.getStatus() != RideStatus.DRIVER_PINGED) {
+                return;
+            }
 
-        // 2️⃣ Encode pickup location
-        String pickupHash = GeoHashUtil.encode(
-                ride.getPickup().lat(),
-                ride.getPickup().lng()
-        );
+            // 2️⃣ Encode pickup location
+            String pickupHash = GeoHashUtil.encode(
+                    ride.getPickup().lat(),
+                    ride.getPickup().lng()
+            );
 
-        Driver nearest = null;                 // ✅ FIX 1
-        double nearestDistance = Double.MAX_VALUE;
+            Driver nearest = null;                 // ✅ FIX 1
+            double nearestDistance = Double.MAX_VALUE;
 
-        final int MAX_RINGS = 3;
+            final int MAX_RINGS = 3;
 
-        // 3️⃣ Progressive ring expansion
-        for (int ring = 0; ring <= MAX_RINGS; ring++) {
+            // 3️⃣ Progressive ring expansion
+            for (int ring = 0; ring <= MAX_RINGS; ring++) {
 
-            Set<String> searchHashes = GeoHashUtil.neighbors(pickupHash, ring);
+                Set<String> searchHashes = GeoHashUtil.neighbors(pickupHash, ring);
 
-            List<Driver> candidates =
-                    geoStore.find(searchHashes).stream()
-                            .map(gd -> store.drivers.get(gd.getDriverId()))
-                            .filter(Objects::nonNull)
-                            .filter(d -> d.getStatus() == DriverStatus.ONLINE)
-                            .filter(d -> !ride.getPingedDrivers().contains(d.getId()))
-                            .toList();
+                List<Driver> candidates =
+                        geoStore.find(searchHashes).stream()
+                                .map(gd -> store.drivers.get(gd.getDriverId()))
+                                .filter(Objects::nonNull)
+                                .filter(d -> d.getStatus() == DriverStatus.ONLINE)
+                                .filter(d -> !ride.getPingedDrivers().contains(d.getId()))
+                                .toList();
 
-            boolean foundInThisRing = false;
+                boolean foundInThisRing = false;
 
-            // 4️⃣ Find nearest driver in THIS ring
-            for (Driver d : candidates) {
+                // 4️⃣ Find nearest driver in THIS ring
+                for (Driver d : candidates) {
 
-                double dist = GeoHashUtil.distanceMeters(
-                        d.getLocation().lat(),
-                        d.getLocation().lng(),
-                        ride.getPickup().lat(),
-                        ride.getPickup().lng()
-                );
+                    double dist = GeoHashUtil.distanceMeters(
+                            d.getLocation().lat(),
+                            d.getLocation().lng(),
+                            ride.getPickup().lat(),
+                            ride.getPickup().lng()
+                    );
 
-                if (dist < nearestDistance) {
-                    nearestDistance = dist;
-                    nearest = d;
-                    foundInThisRing = true;
+                    if (dist < nearestDistance) {
+                        nearestDistance = dist;
+                        nearest = d;
+                        foundInThisRing = true;
+                    }
+                }
+
+                // 5️⃣ Early exit ONLY if this ring had candidates
+                if (foundInThisRing) {
+                    break;
                 }
             }
 
-            // 5️⃣ Early exit ONLY if this ring had candidates
-            if (foundInThisRing) {
-                break;
+            // 6️⃣ No driver found after all rings
+            if (nearest == null) {
+                ride.setStatus(RideStatus.REQUESTED);
+                ride.setAssignedDriverId(null);
+                return;
             }
+
+            boolean driverLocked = false;
+            try {
+                // 🔧 ADD: lock driver (Ride → Driver order)
+                driverLocked = nearest.tryLock(LockPolicy.LOCK_TIMEOUT_MS);
+                if (!driverLocked) return;
+
+                // 🔧 ADD: race protection
+                if (nearest.getAssignedRideId() != null) return;
+
+                RideStateMachine.validate(
+                        ride.getStatus(),
+                        RideStatus.DRIVER_PINGED
+                );
+
+                // 7️⃣ Assign nearest driver
+                ride.setAssignedDriverId(nearest.getId());
+                ride.getPingedDrivers().add(nearest.getId());
+                ride.setStatus(RideStatus.DRIVER_PINGED);
+
+                nearest.assignRide(ride.getId());
+                String key = ride.getId() + ":" + nearest.getId();
+                store.rideTimerExpired.put(key, false);
+                // 8️⃣ Schedule timeout (outside domain logic)
+                Driver finalNearest = nearest;
+                String timerId = timerManager.schedule(
+                        ride.getId(),
+                        "DRIVER_TIMEOUT",
+                        10,
+                        () -> onTimeout(ride, finalNearest)
+                );
+
+// 🔧             CHANGE: ride owns timer
+                ride.getTimers().add(timerId);
+            } finally {
+                if (driverLocked) nearest.unlock(); // 🔧 ADD
+            }
+
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } finally {
+            if (rideLocked) ride.unlock(); // 🔧 ADD
         }
 
-        // 6️⃣ No driver found after all rings
-        if (nearest == null) {
-            ride.setStatus(RideStatus.REQUESTED);
-            ride.setAssignedDriverId(null);
-            return;
-        }
-
-        // 🔧 CHANGE: enforce state machine
-        RideStateMachine.validate(ride.getStatus(), RideStatus.DRIVER_PINGED);
-
-
-        // 7️⃣ Assign nearest driver
-        ride.setAssignedDriverId(nearest.getId());
-        ride.getPingedDrivers().add(nearest.getId());
-        ride.setStatus(RideStatus.DRIVER_PINGED);
-
-        // 8️⃣ Schedule timeout (outside domain logic)
-        Driver finalNearest = nearest;
-        String timerId = timerManager.schedule(
-                ride.getId(),
-                "DRIVER_TIMEOUT",
-                10,
-                () -> onTimeout(ride, finalNearest)
-        );
-
-// 🔧 CHANGE: ride owns timer
-        ride.getTimers().add(timerId);
     }
-
-
 }

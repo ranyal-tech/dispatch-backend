@@ -1,19 +1,17 @@
 package com.example.dispatcher.controller;
 
+import com.example.dispatcher.model.ApiResponse;
 import com.example.dispatcher.model.DriverPingStatusResponse;
 import com.example.dispatcher.model.Ride;
 import com.example.dispatcher.service.RideService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Collection;
 
-@CrossOrigin(
-        origins = "http://localhost:5173",
-        allowedHeaders = "*",
-        methods = {RequestMethod.GET, RequestMethod.POST, RequestMethod.PUT, RequestMethod.DELETE, RequestMethod.OPTIONS}
-)
 @RestController
 @RequestMapping("/rides")
 public class RideController {
@@ -26,53 +24,68 @@ public class RideController {
         this.service = service;
     }
 
+    // Create Ride
     @PostMapping
-    public Ride create(@RequestBody Ride ride) {
+    public ResponseEntity<ApiResponse<Ride>> create(@RequestBody Ride ride) {
         log.info("Creating ride request");
         Ride createdRide = service.create(ride);
-        log.info("Ride created with details:", createdRide.getId());
-        log.info(
-                "Ride created | id={} | status={} | pickup={} | drop={} | driver={}",
-                createdRide.getId(),
-                createdRide.getStatus(),
-                createdRide.getPickup(),
-                createdRide.getDrop(),
-                createdRide.getAssignedDriverId()
-        );
-        return createdRide;
+
+        log.info("Ride created with id={}", createdRide.getId());
+        return ResponseEntity
+                .status(HttpStatus.CREATED)
+                .body(new ApiResponse<>(true, "Ride created successfully", createdRide));
     }
 
+    // Accept Ride
     @PostMapping("/{id}/accept")
-    public void accept(@PathVariable String id) {
-        service.accept(id);
-        log.info("Ride accepted id={}", id);
+    public ResponseEntity<ApiResponse<DriverPingStatusResponse>> accept(@PathVariable String id) {
+        log.info("Accepting ride id={}", id);
+        DriverPingStatusResponse response =  service.accept(id);
+
+        return ResponseEntity
+                .status(HttpStatus.ACCEPTED)
+                .body(new ApiResponse<>(true, "Ride accepted", response));
     }
 
+    // Cancel Ride
     @PostMapping("/{id}/cancel")
-    public void cancel(@PathVariable String id) {
+    public ResponseEntity<ApiResponse<String>> cancel(@PathVariable String id) {
         log.warn("Cancelling ride id={}", id);
-        service.cancel(id);
-        log.info("Ride cancelled id={}", id);
+        String res=service.cancel(id);
+
+        return ResponseEntity
+                .ok(new ApiResponse<>(true, "Ride cancelled", res));
     }
 
+    // Get Single Ride
     @GetMapping("/{rideId}")
-    public Ride getRideStatus(@PathVariable String rideId) {
-        log.debug("Fetching ride status for id={}", rideId);
-        return service.getRide(rideId);
+    public ResponseEntity<ApiResponse<Ride>> getRide(@PathVariable String rideId) {
+        log.debug("Fetching ride id={}", rideId);
+        Ride ride = service.getRide(rideId);
+
+        return ResponseEntity
+                .ok(new ApiResponse<>(true, "Ride fetched", ride));
     }
 
+    // Get All Rides
     @GetMapping
-    public Collection<Ride> getAllRides() {
+    public ResponseEntity<ApiResponse<Collection<Ride>>> getAllRides() {
         log.debug("Fetching all rides");
-        return service.getAllRides();
+        Collection<Ride> rides = service.getAllRides();
+
+        return ResponseEntity
+                .ok(new ApiResponse<>(true, "All rides fetched", rides));
     }
 
+    // Get Driver Ping Status
     @GetMapping("/{rideId}/drivers/{driverId}/ping-status")
-    public DriverPingStatusResponse getDriverPingStatus(
+    public ResponseEntity<ApiResponse<DriverPingStatusResponse>> getDriverPingStatus(
             @PathVariable String rideId,
             @PathVariable String driverId) {
 
-        return service.getPingStatus(rideId, driverId);
-    }
+        DriverPingStatusResponse response = service.getPingStatus(rideId, driverId);
 
+        return ResponseEntity
+                .ok(new ApiResponse<>(true, "Ping status fetched", response));
+    }
 }

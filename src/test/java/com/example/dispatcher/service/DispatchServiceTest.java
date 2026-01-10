@@ -263,14 +263,14 @@ class DispatchServiceTest {
         ride.setPickup(new Location(28.61, 77.20));
         ride.setStatus(RideStatus.REQUESTED);
 
-        store.rides.put("R1", ride);
+        store.rides.put(ride.getId(), ride);
 
         dispatchService.dispatch(ride);
-        rideService.accept("R1");
+
+        rideService.accept(ride.getId());
 
         Thread.sleep(6000);
         assertEquals(RideStatus.ARRIVING, ride.getStatus());
-
         Thread.sleep(6000);
         assertEquals(RideStatus.ON_TRIP, ride.getStatus());
 

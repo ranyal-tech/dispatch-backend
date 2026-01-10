@@ -11,5 +11,6 @@ import java.util.concurrent.ConcurrentHashMap;
 public class InMemoryStore {
     public Map<String, Driver> drivers = new ConcurrentHashMap<>();
     public Map<String, Ride> rides = new ConcurrentHashMap<>();
+    public final Map<String, Boolean> rideTimerExpired = new ConcurrentHashMap<>();
 }
 

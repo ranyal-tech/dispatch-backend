@@ -6,7 +6,7 @@ package com.example.dispatcher.model;
         private boolean pinged;
         private boolean currentlyAssigned;
         private RideStatus rideStatus;
-
+        private boolean expired;
         public String getRideId() {
             return rideId;
         }
@@ -45,6 +45,14 @@ package com.example.dispatcher.model;
 
         public void setRideStatus(RideStatus rideStatus) {
             this.rideStatus = rideStatus;
+        }
+
+        public boolean isExpired() {
+            return expired;
+        }
+
+        public void setExpired(boolean expired) {
+            this.expired = expired;
         }
     }
 

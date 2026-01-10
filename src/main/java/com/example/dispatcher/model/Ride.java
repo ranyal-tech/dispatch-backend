@@ -4,7 +4,9 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
 
 public class Ride {
 
@@ -26,6 +28,7 @@ public class Ride {
 
     private List<String> timers = new ArrayList<>();
 
+    private final ReentrantLock lock = new ReentrantLock();
     public Ride() {
         this.id = "R-" + SEQ.getAndIncrement();
     }
@@ -83,4 +86,15 @@ public class Ride {
     public List<String> getTimers() {
         return timers;
     }
+
+    public boolean tryLock(long timeoutMs) throws InterruptedException {
+        return lock.tryLock(timeoutMs, TimeUnit.MILLISECONDS);
+    }
+
+    public void unlock() {
+        if (lock.isHeldByCurrentThread()) {
+            lock.unlock();
+        }
+    }
+
 }
