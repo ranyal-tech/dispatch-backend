@@ -34,85 +34,89 @@ public class RideService {
         return ride;
     }
 
-    public DriverPingStatusResponse accept(String rideId) {
+    public DriverPingStatusResponse accept(String rideId, String driverId) {
 
         Ride ride = store.rides.get(rideId);
         if (ride == null) {
             throw new IllegalArgumentException("Ride not found: " + rideId);
         }
 
+        Driver driver = store.drivers.get(driverId);
+        if (driver == null) {
+            throw new IllegalArgumentException("Driver not found: " + driverId);
+        }
+
         boolean rideLocked = false;
         boolean driverLocked = false;
-        Driver driver=null;
+
         try {
-            // 🔧 ADD: fail-fast lock on ride
+            // 🔐 Lock ride first (global order)
             rideLocked = ride.tryLock(LockPolicy.LOCK_TIMEOUT_MS);
             if (!rideLocked) {
                 throw new IllegalStateException("Could not lock ride");
             }
 
-            // 🔧 ADD: state guard (idempotency)
+            // ✅ Accept allowed only while pinged
             if (ride.getStatus() != RideStatus.DRIVER_PINGED) {
                 throw new IllegalStateException(
                         "Ride not in DRIVER_PINGED state: " + ride.getStatus()
                 );
             }
 
-            String driverId = ride.getAssignedDriverId();
-            if (driverId == null) {
-                throw new IllegalStateException("No driver assigned to ride");
+            // ✅ Driver must have been pinged
+            if (!ride.getPingedDrivers().contains(driverId)) {
+                throw new IllegalStateException(
+                        "Driver was not pinged for this ride"
+                );
             }
 
-             driver = store.drivers.get(driverId);
-            if (driver == null) {
-                throw new IllegalArgumentException("Driver not found: " + driverId);
-            }
-
-            // 🔧 ADD: lock driver (Ride → Driver ordering)
+            // 🔐 Lock driver second
             driverLocked = driver.tryLock(LockPolicy.LOCK_TIMEOUT_MS);
             if (!driverLocked) {
                 throw new IllegalStateException("Could not lock driver");
             }
 
-            // 🔧 ADD: double-accept protection
-            if (driver.getAssignedRideId() != null &&
-                    !rideId.equals(driver.getAssignedRideId())) {
-                throw new IllegalStateException("Driver is not assigned");
+            // ✅ Driver must be free
+            if (driver.getAssignedRideId() != null) {
+                throw new IllegalStateException(
+                        "Driver already assigned to another ride"
+                );
             }
 
-            // 🔧 CHANGE: clear all timers (timeout etc.)
+            // 🔄 Clear all ping / timeout timers
             clearRideTimers(ride);
 
-            // 🔧 CHANGE: enforce state machine
+            // 🎯 ATOMIC COMMIT (first-accept-wins)
+            ride.setAssignedDriverId(driverId);
+            driver.assignRide(rideId);
 
-            transition(ride,RideStatus.ACCEPTED);
-            // 🔧 CHANGE: establish bidirectional relationship
-            driver.assignRide(ride.getId());
+            transition(ride, RideStatus.ACCEPTED);
 
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new RuntimeException(e);
         } finally {
-            if (driverLocked) driver.unlock(); // 🔧 ADD
-            if (rideLocked) ride.unlock();     // 🔧 ADD
+            if (driverLocked) driver.unlock();
+            if (rideLocked) ride.unlock();
         }
 
-        // 🔧 CHANGE: start progression timers OUTSIDE locks
+        // ⏱ Start ARRIVING timer outside locks
         scheduleArriving(ride);
 
+        // 📦 Response
         DriverPingStatusResponse res = new DriverPingStatusResponse();
-        res.setRideId(ride.getId());
-        res.setDriverId(driver.getId());
+        res.setRideId(rideId);
+        res.setDriverId(driverId);
         res.setPinged(true);
         res.setCurrentlyAssigned(true);
         res.setRideStatus(ride.getStatus());
         res.setExpired(false);
-
+        res.setPickup(ride.getPickup());
+        res.setDrop(ride.getDrop());
         return res;
-
     }
 
-    public String cancel(String rideId) {
+    public String riderCancel(String rideId) {
 
         Ride ride = store.rides.get(rideId);
         if (ride == null) {
@@ -149,10 +153,7 @@ public class RideService {
                     driverLocked = driver.tryLock(LockPolicy.LOCK_TIMEOUT_MS);
                     if (driverLocked) {
 
-                        // 🔧 ADD: driver back ONLINE (YOUR LINE)
-                        driver.setStatus(DriverStatus.ONLINE);
-
-                        // 🔧 ADD: clear bidirectional relationship
+                        //  ADD: clear bidirectional relationship
                         driver.clearAssignedRide();
                     }
                 }
@@ -171,10 +172,67 @@ public class RideService {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } finally {
-            if (driverLocked) driver.unlock(); // 🔧 ADD
-            if (rideLocked) ride.unlock();     // 🔧 ADD
+            if (driverLocked) driver.unlock();
+            if (rideLocked) ride.unlock();
         }
-        return "Ride has been cancelled";
+        return "Ride has been cancelled by Rider";
+    }
+
+    public String driverCancel(String rideId, String driverId) {
+
+        Ride ride = store.rides.get(rideId);
+        Driver driver = store.drivers.get(driverId);
+
+        if (ride == null || driver == null) {
+            throw new IllegalArgumentException("Ride or Driver not found");
+        }
+
+        boolean rideLocked = false;
+        boolean driverLocked = false;
+
+        try {
+            // Lock order: Ride → Driver (consistent everywhere)
+            rideLocked = ride.tryLock(LockPolicy.LOCK_TIMEOUT_MS);
+            if (!rideLocked) throw new IllegalStateException("Could not lock ride");
+
+            // Driver can cancel only before ARRIVING
+            if (ride.getStatus() == RideStatus.ARRIVING ||
+                    ride.getStatus() == RideStatus.ON_TRIP ||
+                    ride.getStatus() == RideStatus.COMPLETED) {
+                throw new IllegalStateException(
+                        "Driver cannot cancel in state: " + ride.getStatus()
+                );
+            }
+
+            if (!ride.getPingedDrivers().contains(driverId))  {
+                throw new IllegalStateException("Driver not assigned to this ride");
+            }
+
+            driverLocked = driver.tryLock(LockPolicy.LOCK_TIMEOUT_MS);
+            if (!driverLocked) throw new IllegalStateException("Could not lock driver");
+
+            clearRideTimers(ride);
+
+            // Reset assignments
+            ride.setAssignedDriverId(null);
+            driver.clearAssignedRide();
+            String key = ride.getId() + ":" + driver.getId();
+            store.rideTimerExpired.put(key, true);
+
+            // Move ride back to REQUESTED
+            transition(ride, RideStatus.REQUESTED);
+
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } finally {
+            if (driverLocked) driver.unlock();
+            if (rideLocked) ride.unlock();
+        }
+
+        // 🚀 Restart dispatch OUTSIDE locks
+        dispatchService.dispatch(ride);
+
+        return "Ride cancelled by driver, redispatch started";
     }
 
 
@@ -216,7 +274,7 @@ public class RideService {
     }
 
 
-    private void transitionToArriving(Ride ride) {
+    public void transitionToArriving(Ride ride) {
 
         boolean rideLocked = false;
         try {

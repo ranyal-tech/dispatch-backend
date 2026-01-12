@@ -7,6 +7,7 @@ import com.example.dispatcher.model.Ride;
 import com.example.dispatcher.model.RideStatus;
 import com.example.dispatcher.store.GeoDriverStore;
 import com.example.dispatcher.store.InMemoryStore;
+import com.example.dispatcher.timer.TimerManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -16,183 +17,146 @@ class RideDispatchServiceTest {
 
     private InMemoryStore store;
     private GeoDriverStore geoStore;
-    private RideDispatchService dispatchService;
+    private DispatchService dispatchService;
+    private RideService service;
+    private TimerManager timerManager;
 
     @BeforeEach
     void setUp() {
         store = new InMemoryStore();
         geoStore = new GeoDriverStore();
-        dispatchService = new RideDispatchService(store, geoStore);
+        timerManager = new TimerManager();
+        dispatchService = new DispatchService(geoStore, store, timerManager);
+        service = new RideService(store, dispatchService, timerManager);
     }
 
     @Test
-    void shouldAssignRideToNearestOnlineDriver() {
-        addDriver("D1", 28.6315, 77.2167, DriverStatus.ONLINE);
-        addDriver("D2", 28.6517, 77.1900, DriverStatus.ONLINE);
+    void shouldPingNearestOnlineDriver() {
+        Driver d1 = addDriver( 28.6315, 77.2167, DriverStatus.ONLINE);
+        Driver d2 = addDriver( 28.6517, 77.1900, DriverStatus.ONLINE);
 
-        Ride ride = dispatchService.createRide(
-                "R1", new Location(28.6320, 77.2170));
-
-        assertEquals(RideStatus.DRIVER_PINGED, ride.getStatus());
-        assertEquals("D1", ride.getAssignedDriverId());
-    }
-
-    @Test
-    void shouldMoveToNextDriverOnReject() {
-        addDriver("D1", 28.63, 77.21, DriverStatus.ONLINE);
-        addDriver("D2", 28.64, 77.22, DriverStatus.ONLINE);
-
-        Ride ride = dispatchService.createRide(
-                "R2", new Location(28.631, 77.215));
-
-        dispatchService.reject("R2", "D1");
-
-        Ride updated = dispatchService.getRide("R2");
-        assertEquals("D2", updated.getAssignedDriverId());
-        assertEquals(RideStatus.DRIVER_PINGED, updated.getStatus());
-    }
-
-    @Test
-    void shouldFailIfWrongDriverAccepts() {
-        addDriver("D1", 28.63, 77.21, DriverStatus.ONLINE);
-
-        Ride ride = dispatchService.createRide(
-                "R3", new Location(28.631, 77.215));
-
-        assertThrows(IllegalStateException.class,
-                () -> dispatchService.accept("R3", "D2"));
+        Ride ride = new Ride();
+        ride.setPickup(new Location(28.6320, 77.2170));
+        
+        Ride createdRide = service.create(ride);
+        
+        assertEquals(RideStatus.DRIVER_PINGED, createdRide.getStatus());
+        assertTrue(createdRide.getPingedDrivers().contains(d1.getId()));
+        // Note: dispatch currently doesn't set assignedDriverId on the Ride object during ping
+        assertNull(createdRide.getAssignedDriverId());
     }
 
     @Test
     void shouldLockRideAfterAccept() {
-        addDriver("D1", 28.63, 77.21, DriverStatus.ONLINE);
+       Driver d1= addDriver( 28.63, 77.21, DriverStatus.ONLINE);
 
-        Ride ride = dispatchService.createRide(
-                "R4", new Location(28.631, 77.215));
+        Ride ride = new Ride();
 
-        dispatchService.accept("R4", "D1");
+        ride.setPickup(new Location(28.631, 77.215));
+        service.create(ride);
 
-        Ride updated = dispatchService.getRide("R4");
+        service.accept(ride.getId(), d1.getId());
+
+        Ride updated = service.getRide(ride.getId());
+
         assertEquals(RideStatus.ACCEPTED, updated.getStatus());
-        assertEquals(DriverStatus.ON_TRIP,
-                store.drivers.get("D1").getStatus());
-    }
-
-    @Test
-    void shouldNotDispatchIfNoOnlineDrivers() {
-        Ride ride = dispatchService.createRide(
-                "R5", new Location(28.63, 77.21));
-
-        assertEquals(RideStatus.CANCELLED, ride.getStatus());
+        assertEquals(d1.getId(), updated.getAssignedDriverId());
+        assertEquals(ride.getId(), store.drivers.get(d1.getId()).getAssignedRideId());
     }
 
     @Test
     void shouldPreventDoubleAccept() {
-        addDriver("D1", 28.63, 77.21, DriverStatus.ONLINE);
+        Driver d1=addDriver( 28.63, 77.21, DriverStatus.ONLINE);
 
-        Ride ride = dispatchService.createRide(
-                "R6", new Location(28.63, 77.21));
+        Ride ride = new Ride();
 
-        dispatchService.accept("R6", "D1");
+        ride.setPickup(new Location(28.63, 77.21));
+        service.create(ride);
+
+        service.accept(ride.getId(), d1.getId());
 
         assertThrows(IllegalStateException.class,
-                () -> dispatchService.accept("R6", "D1"));
+                () -> service.accept(ride.getId(), d1.getId()));
+    }
+
+
+    @Test
+    void riderCancelAfterAcceptReleasesDriver() {
+        Driver D1=addDriver( 28.63, 77.21, DriverStatus.ONLINE);
+
+        Ride ride = new Ride();
+
+        ride.setPickup(new Location(28.63, 77.21));
+        service.create(ride);
+
+        service.accept(ride.getId(), D1.getId());
+
+        service.riderCancel(ride.getId());
+
+        Ride updatedRide = service.getRide(ride.getId());
+        Driver driver = store.drivers.get(D1.getId());
+
+        assertEquals(RideStatus.CANCELLED, updatedRide.getStatus());
+        assertNull(driver.getAssignedRideId());
+    }
+
+    @Test
+    void driverCancelTriggersRedispatch() {
+        Driver D1=addDriver( 28.63, 77.21, DriverStatus.ONLINE);
+        Driver D2=addDriver( 28.64, 77.22, DriverStatus.ONLINE);
+
+        Ride ride = new Ride();
+        ride.setPickup(new Location(28.63, 77.21));
+        service.create(ride);
+
+        service.accept(ride.getId(), D1.getId());
+
+        service.driverCancel(ride.getId(), D1.getId());
+
+        Ride updated = service.getRide(ride.getId());
+
+        // After driver cancel, it transitions to REQUESTED and starts re-dispatch
+        assertEquals(RideStatus.DRIVER_PINGED, updated.getStatus());
+        assertTrue(updated.getPingedDrivers().contains(D2.getId()));
     }
 
     // ---------------- HELPER ----------------
-
-    private void addDriver(String id, double lat, double lng, DriverStatus status) {
+    private Driver addDriver( double lat, double lng, DriverStatus status) {
         Driver d = new Driver();
         d.updateLocation(new Location(lat, lng));
         d.setStatus(status);
-        d.updateLocation(d.getLocation());
 
-        store.drivers.put(id, d);
+        store.drivers.put(d.getId(), d);
         geoStore.addOrUpdate(d);
+
+        return d;
     }
 
     @Test
-    void shouldRetryWithNextDriverOnTimeout() {
+    void shouldNotDispatchIfNoOnlineDrivers() {
 
-        addDriver("D1", 28.63, 77.21, DriverStatus.ONLINE);
-        addDriver("D2", 28.64, 77.22, DriverStatus.ONLINE);
-
-        Ride ride = dispatchService.createRide(
-                "R_TIMEOUT",
-                new Location(28.631, 77.215)
-        );
-
-        // Initially pinged to nearest driver
-        assertEquals("D1", ride.getAssignedDriverId());
-        assertEquals(RideStatus.DRIVER_PINGED, ride.getStatus());
-
-        // 🔥 simulate timeout
-        dispatchService.onTimeout("R_TIMEOUT");
-
-        Ride updated = dispatchService.getRide("R_TIMEOUT");
-
-        assertEquals("D2", updated.getAssignedDriverId());
-        assertEquals(RideStatus.DRIVER_PINGED, updated.getStatus());
-
-        Driver d1 = store.drivers.get("D1");
-        assertEquals(1, d1.getTimeoutCount());
-        assertEquals(DriverStatus.ONLINE, d1.getStatus());
+        Ride ride = new Ride();
+        ride.setPickup(new Location(28.63, 77.21));
+        service.create(ride);
+        assertEquals(RideStatus.REQUESTED, ride.getStatus());
     }
 
     @Test
-    void shouldRetryWithNextDriverOnReject() {
+    void driverCannotCancelAfterArriving() {
 
-        addDriver("D1", 28.63, 77.21, DriverStatus.ONLINE);
-        addDriver("D2", 28.64, 77.22, DriverStatus.ONLINE);
+       Driver d1= addDriver( 28.63, 77.21, DriverStatus.ONLINE);
 
-        Ride ride = dispatchService.createRide(
-                "R_REJECT",
-                new Location(28.631, 77.215)
-        );
+        Ride ride = new Ride();
+        ride.setPickup(new Location(28.63, 77.21));
+        service.create(ride);
+        service.accept(ride.getId(), d1.getId());
 
-        assertEquals("D1", ride.getAssignedDriverId());
+        // simulate ARRIVING
+        service.transitionToArriving(
+                service.getRide(ride.getId()));
 
-        dispatchService.reject("R_REJECT", "D1");
-
-        Ride updated = dispatchService.getRide("R_REJECT");
-
-        assertEquals("D2", updated.getAssignedDriverId());
-        assertEquals(RideStatus.DRIVER_PINGED, updated.getStatus());
-
-        Driver d1 = store.drivers.get("D1");
-        assertEquals(1, d1.getRejectCount());
-        assertEquals(DriverStatus.ONLINE, d1.getStatus());
+        assertThrows(IllegalStateException.class,
+                () -> service.driverCancel(ride.getId(), d1.getId()));
     }
-
-    @Test
-    void shouldRejectInvalidStateTransitions() {
-
-        addDriver("D1", 28.63, 77.21, DriverStatus.ONLINE);
-
-        Ride ride = dispatchService.createRide(
-                "R_STATE",
-                new Location(28.631, 77.215)
-        );
-
-        // ✅ valid accept
-        dispatchService.accept("R_STATE", "D1");
-
-        Ride accepted = dispatchService.getRide("R_STATE");
-        assertEquals(RideStatus.ACCEPTED, accepted.getStatus());
-
-        // ❌ reject after accept
-        assertThrows(IllegalStateException.class,
-                () -> dispatchService.reject("R_STATE", "D1"));
-
-        // ❌ accept again
-        assertThrows(IllegalStateException.class,
-                () -> dispatchService.accept("R_STATE", "D1"));
-
-        // ❌ timeout after accept
-        assertThrows(IllegalStateException.class,
-                () -> dispatchService.onTimeout("R_STATE"));
-    }
-
-
 
 }

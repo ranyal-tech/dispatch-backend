@@ -38,7 +38,8 @@ public class DriverRideService {
             res.setPinged(pinged);
             res.setCurrentlyAssigned(assigned);
             res.setRideStatus(ride.getStatus());
-
+            res.setPickup(ride.getPickup());
+            res.setDrop(ride.getDrop());
             // expired flag
             String key = ride.getId() + ":" + driverId;
             res.setExpired(

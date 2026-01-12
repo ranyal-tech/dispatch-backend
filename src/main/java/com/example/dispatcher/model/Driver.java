@@ -13,7 +13,7 @@ public class Driver {
     private final String id;                 // 🔒 immutable identity
     private Location location;
     private String geoHash;
-    private DriverStatus status = DriverStatus.OFFLINE;
+    private DriverStatus status = DriverStatus.ONLINE;
 
     private double rating;
     private long lastStateChangeAt;
@@ -92,6 +92,7 @@ public class Driver {
 
     public void assignRide(String rideId) {
         this.assignedRideId = rideId;
+        setStatus(DriverStatus.ON_TRIP);
     }
 
     public void clearAssignedRide() {

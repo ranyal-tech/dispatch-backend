@@ -97,16 +97,13 @@ public class DispatchService {
             if (!driverLocked) return;
 
             // ignore stale timeout
-        if (ride.getStatus() != RideStatus.DRIVER_PINGED ||
-                !driver.getId().equals(ride.getAssignedDriverId())) {
+        if (ride.getStatus() != RideStatus.DRIVER_PINGED) {
             return;
         }
 
         driver.recordTimeout();
             String key = ride.getId() + ":" + driver.getId();
             store.rideTimerExpired.put(key, true);
-        ride.setAssignedDriverId(null);
-        driver.clearAssignedRide();
             // CHANGE: state back to REQUESTED (spec)
         RideStateMachine.validate(ride.getStatus(), RideStatus.REQUESTED);
         ride.setStatus(RideStatus.REQUESTED);
@@ -149,7 +146,7 @@ public class DispatchService {
             Driver nearest = null;                 // ✅ FIX 1
             double nearestDistance = Double.MAX_VALUE;
 
-            final int MAX_RINGS = 3;
+            final int MAX_RINGS = 30;
 
             // 3️⃣ Progressive ring expansion
             for (int ring = 0; ring <= MAX_RINGS; ring++) {
@@ -192,7 +189,6 @@ public class DispatchService {
             // 6️⃣ No driver found after all rings
             if (nearest == null) {
                 ride.setStatus(RideStatus.REQUESTED);
-                ride.setAssignedDriverId(null);
                 return;
             }
 
@@ -202,20 +198,14 @@ public class DispatchService {
                 driverLocked = nearest.tryLock(LockPolicy.LOCK_TIMEOUT_MS);
                 if (!driverLocked) return;
 
-                // 🔧 ADD: race protection
-                if (nearest.getAssignedRideId() != null) return;
-
                 RideStateMachine.validate(
                         ride.getStatus(),
                         RideStatus.DRIVER_PINGED
                 );
 
-                // 7️⃣ Assign nearest driver
-                ride.setAssignedDriverId(nearest.getId());
                 ride.getPingedDrivers().add(nearest.getId());
                 ride.setStatus(RideStatus.DRIVER_PINGED);
 
-                nearest.assignRide(ride.getId());
                 String key = ride.getId() + ":" + nearest.getId();
                 store.rideTimerExpired.put(key, false);
                 // 8️⃣ Schedule timeout (outside domain logic)
@@ -223,7 +213,7 @@ public class DispatchService {
                 String timerId = timerManager.schedule(
                         ride.getId(),
                         "DRIVER_TIMEOUT",
-                        10,
+                        20,
                         () -> onTimeout(ride, finalNearest)
                 );
 

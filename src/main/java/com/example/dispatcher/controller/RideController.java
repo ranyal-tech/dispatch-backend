@@ -4,6 +4,7 @@ import com.example.dispatcher.model.ApiResponse;
 import com.example.dispatcher.model.DriverPingStatusResponse;
 import com.example.dispatcher.model.Ride;
 import com.example.dispatcher.service.RideService;
+import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -26,7 +27,7 @@ public class RideController {
 
     // Create Ride
     @PostMapping
-    public ResponseEntity<ApiResponse<Ride>> create(@RequestBody Ride ride) {
+    public ResponseEntity<ApiResponse<Ride>> create( @Valid @RequestBody Ride ride) {
         log.info("Creating ride request");
         Ride createdRide = service.create(ride);
 
@@ -36,25 +37,46 @@ public class RideController {
                 .body(new ApiResponse<>(true, "Ride created successfully", createdRide));
     }
 
-    // Accept Ride
-    @PostMapping("/{id}/accept")
-    public ResponseEntity<ApiResponse<DriverPingStatusResponse>> accept(@PathVariable String id) {
-        log.info("Accepting ride id={}", id);
-        DriverPingStatusResponse response =  service.accept(id);
+    // Accept Ride by Driver
+    @PostMapping("/{rideId}/accept/driver/{driverId}")
+    public ResponseEntity<ApiResponse<DriverPingStatusResponse>> accept(
+            @PathVariable String rideId,
+            @PathVariable String driverId) {
+
+        log.info("Driver {} accepting ride id={}", driverId, rideId);
+
+        DriverPingStatusResponse response =
+                service.accept(rideId, driverId);
 
         return ResponseEntity
-                .status(HttpStatus.ACCEPTED)
+                .status(HttpStatus.OK)
                 .body(new ApiResponse<>(true, "Ride accepted", response));
     }
 
-    // Cancel Ride
-    @PostMapping("/{id}/cancel")
-    public ResponseEntity<ApiResponse<String>> cancel(@PathVariable String id) {
-        log.warn("Cancelling ride id={}", id);
-        String res=service.cancel(id);
 
-        return ResponseEntity
-                .ok(new ApiResponse<>(true, "Ride cancelled", res));
+    // Rider Cancel
+    @PostMapping("/{id}/cancel")
+    public ResponseEntity<ApiResponse<String>> riderCancel(@PathVariable String id) {
+        log.warn("Rider cancelling ride id={}", id);
+        String res = service.riderCancel(id);
+
+        return ResponseEntity.ok(
+                new ApiResponse<>(true, res, res)
+        );
+    }
+
+    // Driver Cancel
+    @PostMapping("/{id}/cancel/driver/{driverId}")
+    public ResponseEntity<ApiResponse<String>> driverCancel(
+            @PathVariable String id,
+            @PathVariable String driverId) {
+
+        log.warn("Driver {} cancelling ride id={}", driverId, id);
+        String res = service.driverCancel(id, driverId);
+
+        return ResponseEntity.ok(
+                new ApiResponse<>(true, res, res)
+        );
     }
 
     // Get Single Ride

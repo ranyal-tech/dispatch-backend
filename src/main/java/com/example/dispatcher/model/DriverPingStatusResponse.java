@@ -7,6 +7,8 @@ package com.example.dispatcher.model;
         private boolean currentlyAssigned;
         private RideStatus rideStatus;
         private boolean expired;
+        private Location pickup;
+        private Location drop;
         public String getRideId() {
             return rideId;
         }
@@ -53,6 +55,22 @@ package com.example.dispatcher.model;
 
         public void setExpired(boolean expired) {
             this.expired = expired;
+        }
+
+        public Location getDrop() {
+            return drop;
+        }
+
+        public void setDrop(Location drop) {
+            this.drop = drop;
+        }
+
+        public Location getPickup() {
+            return pickup;
+        }
+
+        public void setPickup(Location pickup) {
+            this.pickup = pickup;
         }
     }
 

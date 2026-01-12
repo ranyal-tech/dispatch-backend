@@ -53,7 +53,7 @@ class DispatchServiceTest {
         dispatchService.dispatch(ride);
 
         // Assert
-        assertEquals(id1, ride.getAssignedDriverId());
+        assertTrue(ride.getPingedDrivers().contains(id1));
         assertEquals(RideStatus.DRIVER_PINGED, ride.getStatus());
     }
 
@@ -71,7 +71,7 @@ class DispatchServiceTest {
         Driver stored = store.drivers.get(id1);
         assertNotNull(stored);
         assertNotNull(stored.getGeoHash());
-        assertEquals(DriverStatus.OFFLINE, stored.getStatus());
+        assertEquals(DriverStatus.ONLINE, stored.getStatus());
     }
 
     @Test
@@ -141,17 +141,16 @@ class DispatchServiceTest {
                 new RideService(store, dispatchService, timerManager);
 
         Ride ride = new Ride();
-        ride.setAssignedDriverId(d1.getId());
         // 🔧 REQUIRED: valid state before ACCEPT
         ride.setStatus(RideStatus.DRIVER_PINGED);
-
+        ride.getPingedDrivers().add(d1.getId());
         // 🔧 Ride owns multiple timers
         ride.getTimers().add("t1");
         ride.getTimers().add("t2");
 
-        store.rides.put("R1", ride);
+        store.rides.put(ride.getId(), ride);
 
-        rideService.accept("R1");
+        rideService.accept(ride.getId(), d1.getId());
 
         // ✅ Correct verification
         verify(timerManager, times(1)).clearTimer("t1");
@@ -217,7 +216,8 @@ class DispatchServiceTest {
 
         dispatchService.dispatch(ride);
 
-        assertEquals(id, ride.getAssignedDriverId());
+        assertTrue(ride.getPingedDrivers().contains(id));
+
     }
 
 
@@ -267,7 +267,7 @@ class DispatchServiceTest {
 
         dispatchService.dispatch(ride);
 
-        rideService.accept(ride.getId());
+        rideService.accept(ride.getId(), d1.getId());
 
         Thread.sleep(6000);
         assertEquals(RideStatus.ARRIVING, ride.getStatus());
@@ -297,7 +297,7 @@ class DispatchServiceTest {
 
         store.rides.put("R1", ride);
 
-        rideService.cancel("R1");
+        rideService.riderCancel("R1");
 
         verify(timerManager).clearTimer("t1");
         verify(timerManager).clearTimer("t2");
@@ -333,7 +333,7 @@ class DispatchServiceTest {
 
         // ✅ Assertions
         assertEquals(RideStatus.ACCEPTED, ride.getStatus());
-        assertEquals(d1.getId(), ride.getAssignedDriverId());
+        assertTrue(ride.getPingedDrivers().contains(d1.getId()));
     }
 
 }

@@ -1,5 +1,7 @@
 package com.example.dispatcher.model;
 
+import jakarta.validation.constraints.NotNull;
+
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -13,7 +15,9 @@ public class Ride {
     private static final AtomicLong SEQ = new AtomicLong(1);
 
     private final String id;
+    @NotNull(message = "Pickup location is required")
     private Location pickup;
+    @NotNull(message = "Drop location is required")
     private Location drop;
 
     private RideStatus status = RideStatus.REQUESTED;
